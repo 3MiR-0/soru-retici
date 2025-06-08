@@ -1,0 +1,103 @@
+import streamlit as st
+from PyPDF2 import PdfReader
+import openai
+import os
+import base64
+from io import BytesIO
+from fpdf import FPDF
+
+st.set_page_config(page_title="Akıllı Soru Üretici", layout="centered")
+st.title("📘 Akıllı Soru Üretici")
+st.markdown("Yapay zekâ destekli sınav hazırlık aracı")
+
+# OpenAI API anahtarı girişi
+openai_api_key = st.text_input("🔑 OpenAI API Anahtarınızı girin:", type="password")
+
+# Adım 1: Kullanıcıdan giriş yöntemi seçmesini iste
+input_method = st.radio("Veri giriş yöntemini seçin:", ("📎 Dosya Yükle", "📝 Soru Türünü Yaz"))
+user_input_text = ""
+
+# Dosya yükleme seçildiyse
+if input_method == "📎 Dosya Yükle":
+    uploaded_file = st.file_uploader("Dosyanızı yükleyin (PDF veya TXT)", type=["pdf", "txt"])
+    if uploaded_file is not None:
+        if uploaded_file.type == "application/pdf":
+            pdf = PdfReader(uploaded_file)
+            text = ""
+            for page in pdf.pages:
+                text += page.extract_text()
+            user_input_text = text
+        elif uploaded_file.type == "text/plain":
+            user_input_text = uploaded_file.read().decode("utf-8")
+
+# Yazılı giriş seçildiyse
+elif input_method == "📝 Soru Türünü Yaz":
+    user_input_text = st.text_area("Soru türlerini ve konularını buraya yazın:", height=300)
+
+# Filtre ve sınav tipi seçimleri
+question_type = st.selectbox("Soru tipi seçin:", ["Klasik", "Çoktan Seçmeli", "Karışık"])
+filter_keyword = st.text_input("Filtre kelimesi (örn. türev, elektrik):")
+simulate = st.checkbox("🎯 Sınav Simülasyonu Modu")
+
+# PDF çıktısı oluşturma fonksiyonu
+def create_pdf(text):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font("Arial", size=12)
+    for line in text.split('\n'):
+        pdf.multi_cell(0, 10, line)
+    buffer = BytesIO()
+    pdf.output(buffer)
+    return buffer
+
+if user_input_text and openai_api_key:
+    if st.button("🔍 Soruları Üret"):
+        st.success("Veri alındı. Yapay zekâya gönderiliyor...")
+
+        prompt = f"""
+Sen bir sınav hazırlık asistanısın. Aşağıda geçmiş sınavlardan alınmış sorular ya da konu başlıkları verilecektir. Bu içerikler doğrultusunda:
+1. Her konu için sadece {question_type.lower()} tipi 1-2 örnek soru üret.
+2. Her sorunun ayrıntılı çözümünü ver.
+3. İlgili konu hakkında kısa bir özet ve püf noktaları da ekle.
+4. Sadece filtrede belirtilen konu veya anahtar kelimeyle ilgili içerik üret (eğer boşsa tüm konular dahildir).
+5. {'Sınav simülasyonu gibi sade, doğrudan sadece soruları üret.' if simulate else ''}
+
+Girdi:
+{user_input_text}
+
+Filtre:
+{filter_keyword}
+
+Cevap:
+"""
+
+        try:
+            openai.api_key = openai_api_key
+            response = openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+
+            result = response['choices'][0]['message']['content']
+            st.markdown("---")
+            st.subheader("📄 Üretilen İçerik:")
+            sections = result.split("\n\n")
+            for section in sections:
+                if any(heading in section.lower() for heading in ["soru", "çözüm", "püf", "özet"]):
+                    st.markdown(f"🧩 {section}")
+
+            # PDF indirme bağlantısı
+            pdf_buffer = create_pdf(result)
+            b64_pdf = base64.b64encode(pdf_buffer.getvalue()).decode()
+            href = f'<a href="data:application/octet-stream;base64,{b64_pdf}" download="uretilen_sorular.pdf">📥 PDF Olarak İndir</a>'
+            st.markdown(href, unsafe_allow_html=True)
+
+        except Exception as e:
+            st.error(f"Bir hata oluştu: {e}")
+elif user_input_text and not openai_api_key:
+    st.warning("Lütfen OpenAI API anahtarınızı girin.")
+
